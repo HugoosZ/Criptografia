@@ -1,7 +1,0 @@
-Problemas !!
-
-En la act 2 sin darle el payload real gpt me dio un codigo sin padding. Tuve que indicarle el payload real del mensaje para que imitara el padding en el codigo.
-
-En la act 3 me dio el resultado en verde sin problema pero con resultado: "yycriptografia y seguridad en redesy" osea que tengo que solucionarlo.
-
-En general tuve que otorgarle muy especificamente lo que habia que hacer para que me diera lo que realmente era solicitado. Tuve que darle imagenes de la guia y de lo que me daba en wireshark para que funcionara y aun así se me presentó problemas.
