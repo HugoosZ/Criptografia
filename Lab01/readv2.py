@@ -3,68 +3,77 @@
 
 import sys
 import string
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from scapy.all import rdpcap, ICMP, Raw  # type: ignore
 
-# ====== Parámetros del payload/patrón ======
-PAYLOAD_LEN_DEFAULT = 48   # tamaño del data ICMP que usaste en el emisor
-CHECK_TAIL = 8             # cuántos bytes del patrón validar (a partir de data[1])
+MIN_PATTERN_LEN = 4      # mínimo de 0x09,0x0A,0x0B,... consecutivos
+DEFAULT_ACCEPT_TYPES = (8,)  # por defecto SOLO Echo Request
 
-def looks_like_my_template(data: bytes, payload_len: int) -> bool:
-    """
-    Valida que:
-      - el largo del payload sea 'payload_len'
-      - data[1..] siga el patrón 0x09, 0x0A, 0x0B, ... (validamos los primeros CHECK_TAIL)
-    data[0] puede ser cualquier byte (ahí va el carácter útil).
-    """
-    if len(data) != payload_len:
-        return False
-    # validar patrón en los primeros CHECK_TAIL bytes desde la posición 1
-    for i in range(1, 1 + CHECK_TAIL):
-        expected = (0x08 + i) & 0xFF  # 0x09, 0x0A, 0x0B, ...
-        if data[i] != expected:
-            return False
-    return True
+def find_char_offset(data: bytes) -> Optional[int]:
+    n = len(data)
+    for start in range(1, n - MIN_PATTERN_LEN):
+        ok = True
+        for i in range(MIN_PATTERN_LEN):
+            expected = (0x09 + i) & 0xFF
+            if start + i >= n or data[start + i] != expected:
+                ok = False
+                break
+        if ok:
+            char_pos = start - 1
+            if char_pos >= 0:
+                return char_pos
+    return None
 
-# ====== 1) Extraer el mensaje desde el PCAP ======
-def extract_cipher_from_pcap(pcap_path: str, char_offset: int = 0, payload_len: int = PAYLOAD_LEN_DEFAULT) -> str:
+def extract_cipher_from_pcap(pcap_path: str, accept_types=DEFAULT_ACCEPT_TYPES) -> str:
     """
-    Reconstruye el mensaje tomando 1 byte por Echo Request (ICMP type=8) del flujo correcto.
-    Filtra por:
-      - tamaño de payload == payload_len
-      - patrón de padding (ver looks_like_my_template)
-    Agrupa por ICMP id y selecciona el flujo con más paquetes.
+    Lee la traza, toma SOLO los tipos ICMP de accept_types (por defecto, {8}),
+    autodetecta el offset del carácter (byte anterior a la cola 0x09..),
+    agrupa por icmp.id y reconstruye el flujo principal.
+    Deduplica por seq para evitar duplicados.
     """
     pkts = rdpcap(pcap_path)
+    flows: Dict[int, Dict[int, Tuple[float, bytes]]] = {}  # id -> {seq: (ts, ch)}
 
-    # Recolectar candidatos por id
-    flows: Dict[int, List[Tuple[float, int, bytes]]] = {}  # id -> [(ts, seq, ch)]
     for p in pkts:
-        if p.haslayer(ICMP) and p.haslayer(Raw):
-            icmp = p[ICMP]
-            if getattr(icmp, "type", None) == 8 and getattr(icmp, "code", None) == 0:
-                data: bytes = p[Raw].load
-                if looks_like_my_template(data, payload_len=payload_len):
-                    icmp_id = int(getattr(icmp, "id", 0))
-                    icmp_seq = int(getattr(icmp, "seq", 0))
-                    ts = float(getattr(p, "time", 0.0))
-                    if len(data) > char_offset:
-                        ch = data[char_offset:char_offset+1]
-                        flows.setdefault(icmp_id, []).append((ts, icmp_seq, ch))
+        if not (p.haslayer(ICMP) and p.haslayer(Raw)):
+            continue
+        icmp = p[ICMP]
+        if getattr(icmp, "type", None) not in accept_types or getattr(icmp, "code", None) != 0:
+            continue
+
+        data: bytes = p[Raw].load
+        if not data or len(data) < 12:
+            continue
+
+        char_offset = find_char_offset(data)
+        if char_offset is None or char_offset >= len(data):
+            continue
+
+        ch = data[char_offset:char_offset+1]
+        icmp_id = int(getattr(icmp, "id", 0))
+        icmp_seq = int(getattr(icmp, "seq", 0))
+        ts = float(getattr(p, "time", 0.0))
+
+        flows.setdefault(icmp_id, {})
+        # dedupe: si ya vimos este seq, nos quedamos con el primero (ts menor)
+        if icmp_seq not in flows[icmp_id] or ts < flows[icmp_id][icmp_seq][0]:
+            flows[icmp_id][icmp_seq] = (ts, ch)
 
     if not flows:
+        # Plan B: intentar con Echo Reply únicamente, por si la captura sólo los contiene
+        if accept_types != (0,):
+            return extract_cipher_from_pcap(pcap_path, accept_types=(0,))
         return ""
 
-    # Elegimos el id con más paquetes (el flujo “bueno”)
+    # Elegir el id con más secuencias únicas
     best_id = max(flows.keys(), key=lambda k: len(flows[k]))
-    records = flows[best_id]
+    seqmap = flows[best_id]
 
-    # Orden: primero por seq, como respaldo por tiempo
-    records.sort(key=lambda t: (t[1], t[0]))
+    # Ordenar por seq
+    ordered = sorted(seqmap.items(), key=lambda kv: kv[0])  # (seq, (ts, ch))
 
-    # Construimos el texto
     chars: List[str] = []
-    for _, _, ch in records:
+    for _, (_, ch) in ordered:
         try:
             c = ch.decode("ascii")
             chars.append(c if c in string.printable else " ")
@@ -72,9 +81,8 @@ def extract_cipher_from_pcap(pcap_path: str, char_offset: int = 0, payload_len: 
             chars.append(" ")
     return "".join(chars)
 
-# ====== 2) Decodificación César ======
+# ====== César ======
 def caesar_shift(text: str, k: int) -> str:
-    """Desplaza texto por k posiciones (k=0..25). Mantiene mayúsc./minúsc. No altera espacios ni signos."""
     res = []
     for ch in text:
         if 'a' <= ch <= 'z':
@@ -85,11 +93,9 @@ def caesar_shift(text: str, k: int) -> str:
             res.append(ch)
     return "".join(res)
 
-# ====== 3) Heurística para elegir el más probable en español ======
 COMMON_WORDS = [
     " el ", " la ", " de ", " que ", " y ", " en ", " a ", " los ", " se ", " del ",
     " por ", " un ", " con ", " para ", " las ", " es ", " una ", " su ", " al ", " lo ",
-    # del contexto de tu práctica:
     " criptografia ", " seguridad ", " redes "
 ]
 FREQ_WEIGHTS = {"e": 12.5, "a": 11.5, "o": 8.5, "s": 7.8, "r": 7.6, "n": 7.2, "i": 6.9, "l": 5.5, "d": 5.0, "t": 4.6}
@@ -97,32 +103,22 @@ FREQ_WEIGHTS = {"e": 12.5, "a": 11.5, "o": 8.5, "s": 7.8, "r": 7.6, "n": 7.2, "i
 def spanish_score(s: str) -> float:
     st = " " + s.lower() + " "
     score = 0.0
-    # 1) Palabras comunes
     for w in COMMON_WORDS:
         score += 8.0 * st.count(w)
-    # 2) Frecuencia de letras
     for ch, w in FREQ_WEIGHTS.items():
         score += w * st.count(ch)
-    # 3) Bonus pequeño por espacios (texto legible)
     score += st.count(" ") * 0.5
     return score
 
-# ====== 4) Impresión con color ======
 GREEN = "\033[92m"
 RESET = "\033[0m"
 
 def print_all_candidates(cipher: str) -> Tuple[int, str]:
-    """
-    Imprime todas las combinaciones (0..25) y resalta en verde la mejor.
-    Retorna (mejor_k, mejor_texto).
-    """
     candidates = []
     for k in range(26):
         plain = caesar_shift(cipher, k)
         candidates.append((k, plain, spanish_score(plain)))
-
     best_k, best_text, _ = max(candidates, key=lambda x: x[2])
-
     for k, txt, _ in candidates:
         line = f"{k:>2} {txt}"
         if k == best_k:
@@ -131,22 +127,15 @@ def print_all_candidates(cipher: str) -> Tuple[int, str]:
             print(line)
     return best_k, best_text
 
-# ====== 5) Main ======
 def main():
     if len(sys.argv) < 2:
-        print("Uso: sudo python3 readv2.py captura.pcapng [char_offset] [payload_len]")
-        print("  char_offset=0 si el carácter útil está en el primer byte del payload ICMP (por defecto).")
-        print(f"  payload_len={PAYLOAD_LEN_DEFAULT} por defecto (ajústalo si en el envío usaste otro).")
+        print("Uso: sudo python3 readv2.py captura.pcapng")
         sys.exit(1)
 
     pcap_path = sys.argv[1]
-    char_offset = int(sys.argv[2]) if len(sys.argv) >= 3 else 0
-    payload_len = int(sys.argv[3]) if len(sys.argv) >= 4 else PAYLOAD_LEN_DEFAULT
-
-    cipher = extract_cipher_from_pcap(pcap_path, char_offset=char_offset, payload_len=payload_len)
+    cipher = extract_cipher_from_pcap(pcap_path)
 
     best_k, best = print_all_candidates(cipher)
-
     print("\nMejor corrimiento (k):", best_k)
     print("Mensaje probable:", best)
 
