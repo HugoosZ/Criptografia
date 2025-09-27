@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  # db:
+  #   image: mariadb:10.11
+  #   restart: always
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: notSecureChangeMe
+
+  # phpmyadmin:
+  #   image: phpmyadmin
+  #   restart: always
+  #   ports:
+  #     - 8081:80
+  #   environment:
+  #     - PMA_ARBITRARY=1
+
+  dvwa:
+    image: vulnerables/web-dvwa
+    restart: always
+    ports:
+      - 8000:80
