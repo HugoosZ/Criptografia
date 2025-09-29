@@ -1,2 +1,2 @@
-admin:password
-admin:password
+admin:password  # match-success-string len=4413
+gordonb:abc123  # match-success-string len=4417

