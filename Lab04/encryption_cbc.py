@@ -26,9 +26,9 @@ def to_bytes(s: str) -> bytes:
     Convierte una cadena a bytes, intentando primero como hexadecimal.
     """
     try:
-        return bytes.fromhex(s),1 
+        return bytes.fromhex(s)
     except Exception:
-        return s.encode(),0
+        return s.encode()
 
 
 
@@ -111,22 +111,20 @@ def main():
         in_text = input('Ingrese el texto a cifrar: ').strip()
 
     # Texto plano o hexadecimal a bytes
-    key, key_ishex = to_bytes(key_input) 
-    iv, iv_ishex = to_bytes(iv_input)
+    key = to_bytes(key_input) 
+    iv = to_bytes(iv_input)
 
-    # Ajustar key y iv a los tamaños requeridos e imprimir valores
+    print('\nClave sin ajustar (hex):', key.hex())
+    print('IV sin ajustar (hex):', iv.hex())
+
+    # Ajustar key e iv a los tamaños requeridos y luego se imprimen los valores
     key_adj = adjust_size_for_alg(args.alg, 'key', key)
     iv_adj = adjust_size_for_alg(args.alg, 'iv', iv)
 
-    if key_ishex == 1:
-        print('Clave (hex):', key_adj.hex())
-    else:
-        print('Clave (utf-8):', key_adj.decode('utf-8'))
-        
-    if iv_ishex == 1:
-        print('IV (hex):', iv_adj.hex())
-    else:
-        print('IV (utf-8):', iv_adj.decode('utf-8'))
+
+    print('\nClave ajustada (hex):', key_adj.hex())
+    print('IV ajustado (hex):', iv_adj.hex())
+
 
     plaintext = in_text.encode()
 
