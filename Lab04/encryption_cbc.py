@@ -6,6 +6,7 @@ import sys
 from Crypto.Cipher import DES, DES3, AES
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
+from Crypto.Cipher.DES3 import adjust_key_parity
 
 
 
@@ -50,6 +51,10 @@ def adjust_size_for_alg(alg: str, param_type: str, value: bytes) -> bytes:
         value += get_random_bytes(req - len(value))
     elif len(value) > req:
         value = value[:req]
+    
+    if alg == '3DES' and param_type == 'key':
+        value = DES3.adjust_key_parity(value)
+    
     return value
 
 
@@ -114,16 +119,16 @@ def main():
     key = to_bytes(key_input) 
     iv = to_bytes(iv_input)
 
-    print('\nClave sin ajustar (hex):', key.hex())
-    print('IV sin ajustar (hex):', iv.hex())
+    print('\nClave sin ajustar (hex):', key.hex(), "Tamaño:", len(key))
+    print('IV sin ajustar (hex):', iv.hex(), "Tamaño:", len(iv))
 
     # Ajustar key e iv a los tamaños requeridos y luego se imprimen los valores
     key_adj = adjust_size_for_alg(args.alg, 'key', key)
     iv_adj = adjust_size_for_alg(args.alg, 'iv', iv)
 
 
-    print('\nClave ajustada (hex):', key_adj.hex())
-    print('IV ajustado (hex):', iv_adj.hex())
+    print('\nClave ajustada (hex):', key_adj.hex(), "Tamaño:", len(key_adj))
+    print('IV ajustado (hex):', iv_adj.hex(), "Tamaño:", len(iv_adj))
 
 
     plaintext = in_text.encode()
