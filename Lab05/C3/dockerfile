@@ -1,0 +1,11 @@
+FROM ubuntu:20.04
+
+RUN apt-get update \
+    && apt-get install -y keychain \
+    && apt-get install -y libpam-ssh \
+    && apt-get install -y monkeysphere \
+    && apt-get install -y ssh-askpass \
+    && apt-get install -y openssh-client
+
+
+CMD ["sleep", "infinity"]
